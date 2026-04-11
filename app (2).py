@@ -1,10 +1,14 @@
 import streamlit as st
-from groq import Groq
+from langchain_groq import ChatGroq
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langsmith import Client
+import os
+import time
 
 # ── Page config ──────────────────────────────────────────────────
 st.set_page_config(
-    page_title="swastik Chat",
-    page_icon="🌸",
+    page_title="LLaMA Chat",
+    page_icon="🦙",
     layout="centered",
 )
 
@@ -19,6 +23,7 @@ st.markdown("""
     --border:    #2a2f3a;
     --accent:    #e87c3e;
     --accent2:   #f5a461;
+    --green:     #4ade80;
     --text:      #e8eaf0;
     --muted:     #6b7280;
     --user-bg:   #1e2330;
@@ -56,7 +61,7 @@ html, body, [data-testid="stAppViewContainer"] {
     margin: 0;
     letter-spacing: -0.5px;
 }
-.title-bar .badge {
+.badge {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 0.68rem;
     color: var(--accent);
@@ -64,7 +69,15 @@ html, body, [data-testid="stAppViewContainer"] {
     border: 1px solid rgba(232,124,62,0.3);
     border-radius: 4px;
     padding: 2px 7px;
-    margin-left: auto;
+}
+.ls-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    color: var(--green);
+    background: rgba(74,222,128,0.1);
+    border: 1px solid rgba(74,222,128,0.3);
+    border-radius: 4px;
+    padding: 2px 7px;
 }
 
 .msg-wrap {
@@ -82,7 +95,7 @@ html, body, [data-testid="stAppViewContainer"] {
     color: var(--muted);
     padding: 0 4px;
 }
-.msg-label.user { color: var(--accent2); }
+.msg-label.user  { color: var(--accent2); }
 .msg-bubble {
     padding: 0.85rem 1.1rem;
     border-radius: var(--radius);
@@ -92,11 +105,20 @@ html, body, [data-testid="stAppViewContainer"] {
     white-space: pre-wrap;
     word-break: break-word;
 }
-.msg-bubble.user {
-    background: var(--user-bg);
-    border-color: rgba(232,124,62,0.2);
-}
+.msg-bubble.user      { background: var(--user-bg); border-color: rgba(232,124,62,0.2); }
 .msg-bubble.assistant { background: var(--bot-bg); }
+
+.trace-box {
+    background: rgba(74,222,128,0.05);
+    border: 1px solid rgba(74,222,128,0.2);
+    border-radius: 8px;
+    padding: 0.5rem 0.9rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: #4ade80;
+    margin-top: 4px;
+    word-break: break-all;
+}
 
 [data-testid="stChatInput"] textarea {
     background: var(--surface) !important;
@@ -107,9 +129,7 @@ html, body, [data-testid="stAppViewContainer"] {
     font-size: 0.93rem !important;
     box-shadow: none !important;
 }
-[data-testid="stChatInput"] textarea:focus {
-    border-color: var(--accent) !important;
-}
+[data-testid="stChatInput"] textarea:focus { border-color: var(--accent) !important; }
 
 [data-testid="stSidebar"] {
     background: var(--surface) !important;
@@ -127,62 +147,91 @@ html, body, [data-testid="stAppViewContainer"] {
     border-radius: 6px !important;
     transition: all 0.2s !important;
 }
-.stButton button:hover {
-    border-color: var(--accent) !important;
-    color: var(--accent) !important;
-}
-
+.stButton button:hover { border-color: var(--accent) !important; color: var(--accent) !important; }
 hr { border-color: var(--border) !important; margin: 1rem 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Available Groq models ─────────────────────────────────────────
+# ── Groq models ───────────────────────────────────────────────────
 GROQ_MODELS = [
-    "llama-3.1-8b-instant",       # Fastest — 560 t/s
-    "llama-3.3-70b-versatile",    # Best quality — 280 t/s
-    "openai/gpt-oss-20b",         # Fastest GPT OSS — 1000 t/s
-    "openai/gpt-oss-120b",        # Largest GPT OSS — 500 t/s
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
 ]
 
 # ── Session state ─────────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "total_tokens" not in st.session_state:
-    st.session_state.total_tokens = 0
+if "messages"   not in st.session_state: st.session_state.messages   = []
+if "trace_urls" not in st.session_state: st.session_state.trace_urls = []
+
+# ── Read secrets ──────────────────────────────────────────────────
+def get_secret(key, default=""):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.getenv(key, default)
 
 # ── Sidebar ───────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
     st.markdown("---")
 
-    # API key — from Streamlit secrets or manual input
-    default_key = ""
-    try:
-        default_key = st.secrets["GROQ_API_KEY"]
-    except Exception:
-        pass
-
-    api_key = st.text_input(
+    # ── Groq ──────────────────────────────────────────────────────
+    st.markdown("#### ⚡ Groq")
+    groq_key = st.text_input(
         "Groq API Key",
-        value=default_key,
+        value=get_secret("GROQ_API_KEY"),
         type="password",
         placeholder="gsk_...",
-        help="Get a free key at console.groq.com",
+        help="Free key at console.groq.com",
     )
 
-    configured = bool(api_key and api_key.startswith("gsk_"))
-    status_color = "#4ade80" if configured else "#f87171"
-    status_text  = "Ready" if configured else "API key required"
+    st.markdown("---")
+
+    # ── LangSmith ─────────────────────────────────────────────────
+    st.markdown("#### 🔍 LangSmith")
+    ls_key = st.text_input(
+        "LangSmith API Key",
+        value=get_secret("LANGSMITH_API_KEY"),
+        type="password",
+        placeholder="lsv2_...",
+        help="Free key at smith.langchain.com",
+    )
+    ls_project = st.text_input(
+        "Project Name",
+        value=get_secret("LANGSMITH_PROJECT", "groq-chat"),
+        placeholder="groq-chat",
+    )
+
+    # ── Status ────────────────────────────────────────────────────
+    groq_ok = bool(groq_key and groq_key.startswith("gsk_"))
+    ls_ok   = bool(ls_key)
+
     st.markdown(
-        f'<div style="display:flex;align-items:center;gap:8px;margin:0.5rem 0 1rem">'
-        f'<div style="width:8px;height:8px;border-radius:50%;background:{status_color}"></div>'
-        f'<span style="font-size:0.8rem;color:{status_color}">{status_text}</span></div>',
+        f"""
+        <div style="display:flex;flex-direction:column;gap:6px;margin:0.8rem 0">
+            <div style="display:flex;align-items:center;gap:8px">
+                <div style="width:8px;height:8px;border-radius:50%;
+                    background:{'#4ade80' if groq_ok else '#f87171'}"></div>
+                <span style="font-size:0.78rem;color:{'#4ade80' if groq_ok else '#f87171'}">
+                    Groq {'Ready ✓' if groq_ok else 'Key required'}
+                </span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+                <div style="width:8px;height:8px;border-radius:50%;
+                    background:{'#4ade80' if ls_ok else '#f5a461'}"></div>
+                <span style="font-size:0.78rem;color:{'#4ade80' if ls_ok else '#f5a461'}">
+                    LangSmith {'Tracing ON ✓' if ls_ok else 'Key required'}
+                </span>
+            </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
-    model = st.selectbox("Model", GROQ_MODELS, index=0)
-    temperature = st.slider("Temperature", 0.0, 2.0, 0.7, 0.05,
-                            help="Higher = more creative, lower = more precise")
+    st.markdown("---")
+    model       = st.selectbox("Model", GROQ_MODELS, index=0)
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.05)
     max_tokens  = st.slider("Max tokens", 64, 2048, 512, 64)
 
     st.markdown("---")
@@ -196,8 +245,8 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑 Clear chat"):
-            st.session_state.messages = []
-            st.session_state.total_tokens = 0
+            st.session_state.messages   = []
+            st.session_state.trace_urls = []
             st.rerun()
     with col2:
         msg_count = len(st.session_state.messages)
@@ -207,24 +256,38 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
+# ── Enable LangSmith tracing ──────────────────────────────────────
+if ls_ok:
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_API_KEY"]    = ls_key
+    os.environ["LANGCHAIN_PROJECT"]    = ls_project
+    os.environ["LANGCHAIN_ENDPOINT"]   = "https://api.smith.langchain.com"
+else:
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
 # ── Title ─────────────────────────────────────────────────────────
 st.markdown(
     f"""
     <div class="title-bar">
-        <div class="icon">🌸</div>
-        <h1>swastik Chat</h1>
-        <div class="badge">Groq · {model}</div>
+        <div class="icon">🦙</div>
+        <h1>LLaMA Chat</h1>
+        <div style="display:flex;gap:6px;margin-left:auto;align-items:center">
+            <div class="badge">Groq · {model}</div>
+            {"<div class='ls-badge'>🔍 LangSmith</div>" if ls_ok else ""}
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ── API key warning ───────────────────────────────────────────────
-if not configured:
-    st.warning("⚠️ Enter your Groq API key in the sidebar. Get one free at [console.groq.com](https://console.groq.com)")
+# ── Warnings ──────────────────────────────────────────────────────
+if not groq_ok:
+    st.warning("⚠️ Enter your Groq API key in the sidebar. Free at [console.groq.com](https://console.groq.com)")
+if not ls_ok:
+    st.info("💡 Add your LangSmith API key to enable tracing. Free at [smith.langchain.com](https://smith.langchain.com)")
 
-# ── Render history ────────────────────────────────────────────────
-for msg in st.session_state.messages:
+# ── Render chat history ───────────────────────────────────────────
+for i, msg in enumerate(st.session_state.messages):
     role  = msg["role"]
     label = "YOU" if role == "user" else "LLAMA"
     cls   = "user" if role == "user" else "assistant"
@@ -237,9 +300,19 @@ for msg in st.session_state.messages:
         """,
         unsafe_allow_html=True,
     )
+    # Show trace link under each assistant message
+    if role == "assistant":
+        idx = i // 2
+        if idx < len(st.session_state.trace_urls) and st.session_state.trace_urls[idx]:
+            url = st.session_state.trace_urls[idx]
+            st.markdown(
+                f'<div class="trace-box">🔍 LangSmith Trace → '
+                f'<a href="{url}" target="_blank" style="color:#4ade80">{url}</a></div>',
+                unsafe_allow_html=True,
+            )
 
 # ── Chat input ────────────────────────────────────────────────────
-if prompt := st.chat_input("Message LLaMA…", disabled=not configured):
+if prompt := st.chat_input("Message LLaMA…", disabled=not groq_ok):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.markdown(
         f"""
@@ -251,41 +324,76 @@ if prompt := st.chat_input("Message LLaMA…", disabled=not configured):
         unsafe_allow_html=True,
     )
 
-    api_messages = [{"role": "system", "content": system_prompt}] + [
-        {"role": m["role"], "content": m["content"]}
-        for m in st.session_state.messages
-    ]
+    # Build LangChain messages
+    lc_messages = [SystemMessage(content=system_prompt)]
+    for m in st.session_state.messages:
+        if m["role"] == "user":
+            lc_messages.append(HumanMessage(content=m["content"]))
+        else:
+            lc_messages.append(AIMessage(content=m["content"]))
 
     st.markdown('<div class="msg-wrap"><div class="msg-label">LLAMA</div>', unsafe_allow_html=True)
     response_placeholder = st.empty()
     full_response = ""
 
     try:
-        client = Groq(api_key=api_key)
-        stream = client.chat.completions.create(
+        # ── LangChain Groq — auto-traced by LangSmith ─────────────
+        llm = ChatGroq(
+            api_key=groq_key,
             model=model,
-            messages=api_messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            stream=True,
+            streaming=True,
         )
 
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            full_response += delta
+        run_config = {
+            "run_name": f"Ravi-Chat-Turn-{len(st.session_state.messages)}",
+            "tags": ["streamlit", "groq", "ravi", model],
+            "metadata": {"user": "Ravi", "model": model, "project": ls_project},
+        }
+
+        # Stream tokens
+        for chunk in llm.stream(lc_messages, config=run_config):
+            full_response += chunk.content or ""
             response_placeholder.markdown(
                 f'<div class="msg-bubble assistant">{full_response}▌</div>',
                 unsafe_allow_html=True,
             )
 
+        # Final render
         response_placeholder.markdown(
             f'<div class="msg-bubble assistant">{full_response}</div>',
             unsafe_allow_html=True,
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        st.session_state.total_tokens += len(full_response) // 4
+        # ── Fetch LangSmith trace URL ─────────────────────────────
+        trace_url = None
+        if ls_ok:
+            try:
+                time.sleep(1)  # allow trace to be recorded
+                ls_client = Client(api_key=ls_key)
+                runs = list(ls_client.list_runs(
+                    project_name=ls_project,
+                    execution_order=1,
+                    limit=1,
+                ))
+                if runs:
+                    trace_url = f"https://smith.langchain.com/public/{runs[0].id}/r"
+                else:
+                    trace_url = f"https://smith.langchain.com/projects/{ls_project}"
+
+                st.markdown(
+                    f'<div class="trace-box">🔍 LangSmith Trace → '
+                    f'<a href="{trace_url}" target="_blank" style="color:#4ade80">{trace_url}</a></div>',
+                    unsafe_allow_html=True,
+                )
+            except Exception:
+                trace_url = f"https://smith.langchain.com/projects/{ls_project}"
+
+        st.session_state.trace_urls.append(trace_url)
         st.session_state.messages.append({"role": "assistant", "content": full_response})
 
     except Exception as e:
-        response_placeholder.error(f"Groq API error: {e}")
+        response_placeholder.error(f"Error: {e}")
+        st.session_state.trace_urls.append(None)
