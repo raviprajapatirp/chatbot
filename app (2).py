@@ -269,8 +269,8 @@ else:
 st.markdown(
     f"""
     <div class="title-bar">
-        <div class="icon">🦙</div>
-        <h1>LLaMA Chat</h1>
+        <div class="icon">❤️</div>
+        <h1>APPLE Chat</h1>
         <div style="display:flex;gap:6px;margin-left:auto;align-items:center">
             <div class="badge">Groq · {model}</div>
             {"<div class='ls-badge'>🔍 LangSmith</div>" if ls_ok else ""}
