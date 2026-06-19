@@ -7,8 +7,8 @@ import time
 
 # ── Page config ──────────────────────────────────────────────────
 st.set_page_config(
-    page_title="LLaMA Chat",
-    page_icon="🦙",
+    page_title="Swastik Chat",
+    page_icon="🌟",
     layout="centered",
 )
 
@@ -269,8 +269,8 @@ else:
 st.markdown(
     f"""
     <div class="title-bar">
-        <div class="icon">❤️</div>
-        <h1>APPLE Chat</h1>
+        <div class="icon">🌟</div>
+        <h1>Swastik Chat</h1>
         <div style="display:flex;gap:6px;margin-left:auto;align-items:center">
             <div class="badge">Groq · {model}</div>
             {"<div class='ls-badge'>🔍 LangSmith</div>" if ls_ok else ""}
@@ -383,11 +383,11 @@ if prompt := st.chat_input("Message LLaMA…", disabled=not groq_ok):
                 else:
                     trace_url = f"https://smith.langchain.com/projects/{ls_project}"
 
-                st.markdown(
-                    f'<div class="trace-box">🔍 LangSmith Trace → '
-                    f'<a href="{trace_url}" target="_blank" style="color:#4ade80">{trace_url}</a></div>',
-                    unsafe_allow_html=True,
-                )
+               # st.markdown(
+                   # f'<div class="trace-box">🔍 LangSmith Trace → '
+                   # f'<a href="{trace_url}" target="_blank" style="color:#4ade80">{trace_url}</a></div>',
+                    #unsafe_allow_html=True,
+                #)
             except Exception:
                 trace_url = f"https://smith.langchain.com/projects/{ls_project}"
 
